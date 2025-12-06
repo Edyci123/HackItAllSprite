@@ -10,7 +10,7 @@ class Task:
     id: str
     query: str
     status: TaskStatus = TaskStatus.PENDING
-    result: Optional[list[str]] = None
+    result: Optional[list[dict]] = None
     error: Optional[str] = None
 
 
@@ -33,7 +33,7 @@ class TaskManager:
             task.status = status
         return task
 
-    def complete_task(self, task_id: str, result: list[str]) -> Optional[Task]:
+    def complete_task(self, task_id: str, result: list[dict]) -> Optional[Task]:
         task = self._tasks.get(task_id)
         if task:
             task.status = TaskStatus.COMPLETED

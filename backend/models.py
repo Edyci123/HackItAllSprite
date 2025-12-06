@@ -75,12 +75,18 @@ class TaskStatusResponse(BaseModel):
         description="The original search query",
         json_schema_extra={"example": "wireless headphones"}
     )
-    result: Optional[list[str]] = Field(
+    result: Optional[list[dict]] = Field(
         default=None,
-        description="List of product URLs when the task is completed",
+        description="List of product dictionaries when the task is completed",
         json_schema_extra={"example": [
-            "https://example.com/product/123",
-            "https://example.com/product/456"
+            {
+                "name": "Product Name",
+                "price": "100 lei",
+                "link": "https://example.com/product/123",
+                "image": "https://example.com/image.jpg",
+                "firm": "Seller Name",
+                "description": "Product Description"
+            }
         ]}
     )
     error: Optional[str] = Field(

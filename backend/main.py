@@ -3,6 +3,8 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from models import SearchRequest, TaskCreatedResponse, TaskStatusResponse, TaskStatus
 from tasks import task_manager
 from query_transformer import transform_user_query
+from scraper import scrape_google_products
+from ranker import rank_products
 
 tags_metadata = [
     {
@@ -61,9 +63,27 @@ def run_search_task(task_id: str, query: str, country: str = "US"):
         print(f"[Task {task_id}] ✓ Features: {search_data.product_features}")
         print(f"[Task {task_id}] ✓ Category: {search_data.product_category}")
 
+        # Step 2: Scrape Google Shopping
+        print(f"[Task {task_id}] Step 2: Scraping Google Shopping...")
+        raw_products = scrape_google_products(search_data.google_search_query)
+        print(f"[Task {task_id}] ✓ Found {len(raw_products)} raw products")
+
+        # Step 3: Rank Products
+        print(f"[Task {task_id}] Step 3: Ranking products...")
+        ranked_products = rank_products(raw_products, query)
+        print(f"[Task {task_id}] ✓ Ranking complete")
+
+        # Save ranked results to file
+        safe_query = "".join([c if c.isalnum() else "_" for c in query])
+        filename = f"ranked_{safe_query}.json"
+        import json
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump([p for p in ranked_products], f, indent=2, ensure_ascii=False)
+        print(f"[Task {task_id}] ✓ Ranked results saved to {filename}")
+
        
         # Mark task as completed with results
-        task_manager.complete_task(task_id, [])
+        task_manager.complete_task(task_id, ranked_products)
         print(f"[Task {task_id}] ✓ Task completed successfully!")
         
     except Exception as e:

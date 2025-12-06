@@ -4,3 +4,7 @@ pydantic
 openai
 python-dotenv
 apify-client
+selenium
+webdriver-manager
+beautifulsoup4
+undetected-chromedriver

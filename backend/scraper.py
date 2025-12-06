@@ -272,19 +272,20 @@ def fetch_details_for_chunk(chunk, html_dir):
         
     return detailed_chunk
 
-if __name__ == "__main__":
-    # Test the scraper
-    query = "iphone 15 pro"
-    if len(sys.argv) > 1:
-        query = sys.argv[1]
-    
+def scrape_google_products(query: str, max_products: int = 50) -> list[dict]:
+    """
+    Orchestrates the scraping of Google Shopping for products matching the query.
+    1. Gets initial list of products.
+    2. Fetches detailed info (HTML, resolved links) in parallel.
+    3. Saves results and HTML files.
+    """
     print(f"Starting scraping for query: '{query}'")
     
-    # 1. Get initial results (Single Threaded - it's fast enough and complex to parallelize browsing)
+    # 1. Get initial results (Single Threaded)
     results = get_products(query)
     
-    # Limit to max 50 products for the detailed scrape
-    products = results[:50]
+    # Limit to max products for the detailed scrape
+    products = results[:max_products]
     
     print(f"\nFound {len(products)} products. Starting parallel detailed fetch...")
     
@@ -300,7 +301,7 @@ if __name__ == "__main__":
     if len(products) < NUM_WORKERS:
         NUM_WORKERS = len(products)
     
-    chunk_size = (len(products) + NUM_WORKERS - 1) // NUM_WORKERS 
+    chunk_size = (len(products) + NUM_WORKERS - 1) // NUM_WORKERS if NUM_WORKERS > 0 else 1
     product_chunks = [products[i:i + chunk_size] for i in range(0, len(products), chunk_size)]
     
     detailed_products = []
@@ -330,3 +331,13 @@ if __name__ == "__main__":
     
     print(f"\nDetailed results saved to {filename}")
     print(f"HTML files saved to {html_dir}/")
+    
+    return detailed_products
+
+if __name__ == "__main__":
+    # Test the scraper
+    query = "iphone 15 pro"
+    if len(sys.argv) > 1:
+        query = sys.argv[1]
+    
+    scrape_google_products(query)
