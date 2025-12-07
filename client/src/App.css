@@ -1121,6 +1121,75 @@ body::after {
   gap: 2rem;
 }
 
+/* Loading indicator below products */
+.loading-below-products {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem;
+  margin-top: 2rem;
+  background: linear-gradient(135deg, rgba(212, 175, 55, 0.08), rgba(212, 175, 55, 0.02));
+  border: 1px solid rgba(212, 175, 55, 0.2);
+  border-radius: 16px;
+  animation: fadeInUp 0.4s var(--ease-out-expo);
+}
+
+.loading-spinner-small {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--neon-gold);
+  border-right-color: var(--neon-gold);
+  border-radius: 50%;
+  animation: spinLoader 1s linear infinite;
+  flex-shrink: 0;
+}
+
+.loading-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.loading-text-small {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--neon-gold);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.loading-subtext-small {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.progress-steps-horizontal {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  transition: all 0.3s;
+}
+
+.step-dot.active {
+  background: var(--neon-gold);
+  box-shadow: 0 0 10px var(--neon-gold-dim);
+}
+
+.step-dot.complete {
+  background: var(--neon-green);
+  box-shadow: 0 0 8px rgba(0, 255, 157, 0.3);
+}
+
 .loader-wrapper {
   position: relative;
   width: 80px;
