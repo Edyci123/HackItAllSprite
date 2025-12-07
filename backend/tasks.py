@@ -1,6 +1,7 @@
 import uuid
+import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable
 
 from models import TaskStatus
 
@@ -12,6 +13,13 @@ class Task:
     status: TaskStatus = TaskStatus.PENDING
     result: Optional[list[dict]] = None
     error: Optional[str] = None
+    # Detailed progress tracking
+    current_step: str = "initializing"
+    step_message: str = "Preparing your search..."
+    total_products: int = 0
+    scored_products: list = field(default_factory=list)
+    progress_percent: int = 0
+    started_at: float = field(default_factory=time.time)
 
 
 class TaskManager:
@@ -45,6 +53,30 @@ class TaskManager:
         if task:
             task.status = TaskStatus.FAILED
             task.error = error
+        return task
+
+    def update_task_progress(
+        self,
+        task_id: str,
+        current_step: str = None,
+        step_message: str = None,
+        total_products: int = None,
+        scored_product: dict = None,
+        progress_percent: int = None
+    ) -> Optional[Task]:
+        """Update detailed progress information for a task."""
+        task = self._tasks.get(task_id)
+        if task:
+            if current_step is not None:
+                task.current_step = current_step
+            if step_message is not None:
+                task.step_message = step_message
+            if total_products is not None:
+                task.total_products = total_products
+            if scored_product is not None:
+                task.scored_products.append(scored_product)
+            if progress_percent is not None:
+                task.progress_percent = progress_percent
         return task
 
 

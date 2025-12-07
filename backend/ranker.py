@@ -11,74 +11,63 @@ class ProductScore(BaseModel):
 
 def score_product(product: dict, user_query: str) -> dict:
     """
-    Scores a single product using the LLM with web search capabilities.
+    Scores a single product using the LLM with structured output.
+    Uses OpenAI's Structured Outputs API for guaranteed valid responses.
     """
     client = get_llm_client()
     
-    prompt = f"""You are a product ranking expert.
-Your goal is to score this product based on 3 criteria.
-You have access to a **web_search** tool. You MUST use it to find information about the seller/firm if you don't know them.
+    prompt = f"""Ești un expert în shopping și analiză de afaceri locale din România.
+Scopul tău este să analizezi acest produs pentru un utilizator din România care vrea să susțină afacerile locale mici.
 
-1. **Small Business Score** (High numeric value = GOOD):
-   - We want to support smaller, local businesses.
-   - If the seller is a giant (eMag, Amazon, Altex, Zara, H&M, AboutYou, Epantofi, etc.), give a VERY LOW score (0-20).
-   - If it's a small/medium Romanian business (turnover < 10M EUR or unknown brand), give a HIGH score (80-100).
-   - **USE WEB SEARCH** to check the firm's size ("cifra de afaceri listafirme").
+1. **Scor Afacere Mică** (Small Business Score):
+   - Căutăm producători locali, afaceri românești mici.
+   - Dacă vânzătorul este un gigant (eMag, Amazon, Altex, Zara, H&M, AboutYou, Epantofi, Dedeman etc.), dă un scor FOARTE MIC (0-15).
+   - Dacă este o afacere mică/medie românească sau un brand local, dă un scor MARE (85-100).
 
-2. **Trust Score** (High numeric value = GOOD):
-   - **USE WEB SEARCH** to check reviews (Reddit, Trustpilot, "pareri", "teapa").
-   - If scams/teapa mentioned -> 0.
-   - If mixed reviews -> 40-60.
-   - If good reputation -> 80-100.
-   - If no info found after searching -> 50 (Neutral).
+2. **Scor Încredere** (Trust Score):
+   - Reputație bună -> 80-100.
+   - Lipsă informații -> 50.
 
-3. **Similarity Score** (High numeric value = GOOD):
-   - How well does the product '{product.get('name')}' match the User Query: "{user_query}"?
-   - Check materials, color, style, price.
+3. **Scor Similitudine** (Similarity Score):
+   - Cât de bine se potrivește produsul '{product.get('name')}' cu ce a cerut utilizatorul: "{user_query}"?
 
-4. **Final Calculation**:
-   - Small Business: 40%
-   - Similarity: 30%
-   - Trust: 30%
+4. **Raționament (Reasoning - FOARTE IMPORTANT)**:
+   - Scrie ÎNTOTDEAUNA în limba ROMÂNĂ.
+   - Concentrează-te EXCLUSIV pe COMPANIE/VÂNZĂTOR, nu pe produs.
+   - Menționează informații despre afacerea "{product.get('firm')}":
+     * Este o afacere locală românească sau un lanț mare?
+     * Ce fel de companie este? (atelier, magazin de familie, producător local, brand românesc)
+     * De cât timp există pe piață (dacă știi)?
+     * Ce o face specială sau diferită?
+   - Scrie 2-3 fraze SCURTE și ATRĂGĂTOARE care să invite la cumpărare.
+   - Exemplu pentru afacere mică: "Furnizat de [Firm], un atelier local care creează produse artizanale din 2015. Susține economia locală alegând această afacere românească!"
+   - Exemplu pentru firmă mare: "Disponibil de la [Firm], un retailer de încredere cu livrare rapidă."
+   - NU menționa scoruri sau numere.
 
-Product Details:
-Name: {product.get('name')}
-Price: {product.get('price')}
-Seller: {product.get('firm')}
-Description: {product.get('description')}
+5. **Final Score**: Calculate as weighted average: 40% Small Biz, 30% Similarity, 30% Trust.
+
+Detalii Produs:
+Nume: {product.get('name')}
+Preț: {product.get('price')}
+Vânzător/Companie: {product.get('firm')}
+Descriere: {product.get('description')}
 Link: {product.get('link')}
-
-Output ONLY a valid JSON object with the following structure:
-{{
-    "small_business_score": int,
-    "trust_score": int,
-    "similarity_score": int,
-    "final_score": int,
-    "reasoning": "string with citations"
-}}
 """
 
     try:
-        response_text = client.create_response(
-            input_text=prompt,
-            tools=[{"type": "web_search"}],
-            # If gpt-4o-mini is not supported for responses, we might default to whatever works or let the user config override.
-            # However, the user documentation examples use "gpt-5" or "o4-mini".
-            # Safe bet: try to use the default model from client, if it fails, we might need to change the default model in llm_client.
+        # Use structured output API for guaranteed valid response format
+        score_result = client.structured_output(
+            messages=[
+                {"role": "system", "content": "You are a product scoring expert. Always respond with the exact JSON structure requested."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format=ProductScore,
+            temperature=0.3,
         )
-        
-        # Strip markdown syntax if present
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
-            
-        import json
-        score_data = json.loads(response_text)
         
         return {
             **product,
-            "scores": score_data
+            "scores": score_result.model_dump()
         }
     except Exception as e:
         print(f"Error scoring product {product.get('name')}: {e}")
@@ -94,9 +83,14 @@ Output ONLY a valid JSON object with the following structure:
             }
         }
 
-def rank_products(products: list[dict], user_query: str) -> list[dict]:
+def rank_products(products: list[dict], user_query: str, on_product_scored=None) -> list[dict]:
     """
     Ranks a list of products using LLM-based scoring with integrated web search.
+    
+    Args:
+        products: List of product dictionaries to score
+        user_query: Original user search query
+        on_product_scored: Optional callback(scored_product, index, total) called after each product is scored
     """
     if not products:
         return []
@@ -104,6 +98,7 @@ def rank_products(products: list[dict], user_query: str) -> list[dict]:
     print(f"Ranking {len(products)} products using Agentic Web Search...")
     
     scored_products = []
+    total = len(products)
     
     # We can probably increase max_workers slightly as we are not doing manual scraping anymore, 
     # but we are hitting OpenAI API which has rate limits.
@@ -113,7 +108,12 @@ def rank_products(products: list[dict], user_query: str) -> list[dict]:
             futures.append(executor.submit(score_product, product, user_query))
             
         for future in concurrent.futures.as_completed(futures):
-            scored_products.append(future.result())
+            scored_product = future.result()
+            scored_products.append(scored_product)
+            
+            # Call the callback if provided (for streaming)
+            if on_product_scored:
+                on_product_scored(scored_product, len(scored_products), total)
 
     # Sort by Final Score Descending
     scored_products.sort(key=lambda x: x["scores"]["final_score"], reverse=True)

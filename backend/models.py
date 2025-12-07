@@ -94,18 +94,46 @@ class TaskStatusResponse(BaseModel):
         description="Error message if the task failed",
         json_schema_extra={"example": None}
     )
+    # Detailed progress fields
+    current_step: str = Field(
+        default="initializing",
+        description="Current pipeline step: initializing, transforming, scraping, ranking, completed"
+    )
+    step_message: str = Field(
+        default="Preparing your search...",
+        description="Human-readable detailed status message"
+    )
+    total_products: int = Field(
+        default=0,
+        description="Total number of products found to rank"
+    )
+    scored_count: int = Field(
+        default=0,
+        description="Number of products that have been scored so far"
+    )
+    progress_percent: int = Field(
+        default=0,
+        description="Estimated progress percentage (0-100)"
+    )
+    partial_results: Optional[list[dict]] = Field(
+        default=None,
+        description="Products that have been scored so far (streaming results)"
+    )
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
                     "task_id": "550e8400-e29b-41d4-a716-446655440000",
-                    "status": "completed",
+                    "status": "running",
                     "query": "wireless headphones",
-                    "result": [
-                        "https://example.com/product/123",
-                        "https://example.com/product/456"
-                    ],
+                    "current_step": "ranking",
+                    "step_message": "Analyzing product 5 of 20...",
+                    "total_products": 20,
+                    "scored_count": 5,
+                    "progress_percent": 45,
+                    "partial_results": [],
+                    "result": None,
                     "error": None
                 }
             ]

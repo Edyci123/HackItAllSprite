@@ -1,2 +1,8 @@
 backend/.env
 venv
+
+# HTML scraping output folders
+html_*/
+
+# JSON output files
+*.json

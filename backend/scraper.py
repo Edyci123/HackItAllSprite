@@ -57,9 +57,9 @@ def get_products(query):
 
         # Human-like scrolling to trigger lazy loading and avoid detection
         # Scroll more to get more results
-        for i in range(15): 
+        for i in range(5): 
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(random.uniform(2.0, 4.0))
+            time.sleep(random.uniform(0.5, 1.0))
             
             # Try to click "More results" button if it exists
             try:
@@ -70,13 +70,13 @@ def get_products(query):
                 for btn in more_btns:
                     if btn.is_displayed():
                         driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(0.5)
+                        time.sleep(0.3)
             except:
                 pass
 
         # Scroll back up a bit to ensure elements are in view
         driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(0.5)
+        time.sleep(0.2)
 
         # Get page source and parse with BeautifulSoup
         soup = BeautifulSoup(driver.page_source, 'html.parser')
@@ -105,6 +105,17 @@ def get_products(query):
                     price_tag = result.select_one('span[aria-hidden="true"]') 
 
                 price = price_tag.get_text(strip=True) if price_tag else "N/A"
+                
+                # Fix for sale prices: Google concatenates original and sale price (e.g., "699RON599RON")
+                # Extract only the last price (the actual sale price)
+                if price and price != "N/A":
+                    import re
+                    # Match price patterns like "123 lei", "123,45 RON", "123.45 Lei", etc.
+                    price_pattern = r'(\d+(?:[.,]\d+)?\s*(?:lei|RON|Lei|ron|LEI))'
+                    matches = re.findall(price_pattern, price, re.IGNORECASE)
+                    if matches:
+                        # Take the last match (which is typically the sale/current price)
+                        price = matches[-1].strip()
 
                 # Extract Link
                 link_tag = None
@@ -297,7 +308,7 @@ def scrape_google_products(query: str, max_products: int = 50) -> list[dict]:
 
     # 2. Parallel Processing
     # Split products into chunks
-    NUM_WORKERS = 4
+    NUM_WORKERS = 5
     if len(products) < NUM_WORKERS:
         NUM_WORKERS = len(products)
     
@@ -333,6 +344,141 @@ def scrape_google_products(query: str, max_products: int = 50) -> list[dict]:
     print(f"HTML files saved to {html_dir}/")
     
     return detailed_products
+
+
+def fetch_single_product_details(product: dict, html_dir: str, driver_lock: threading.Lock) -> dict:
+    """
+    Fetches details for a single product. Used by streaming scraper.
+    Creates its own driver for isolation.
+    """
+    options = uc.ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
+    options.page_load_strategy = 'eager'
+    options.add_argument("--disable-gpu")
+    
+    link = product.get("link")
+    if not link:
+        return {**product, "html_text": ""}
+    
+    driver = None
+    try:
+        with driver_lock:
+            driver = uc.Chrome(options=options, version_main=142)
+        
+        driver.get(link)
+        try:
+            WebDriverWait(driver, 8).until(
+                lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"]
+            )
+        except:
+            pass
+        
+        time.sleep(0.5)  # Reduced for speed
+        
+        final_url = driver.current_url
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        html_text = str(soup)
+        
+        # Save HTML file
+        if html_dir:
+            safe_name = "".join([c if c.isalnum() else "_" for c in product['name']])[:50]
+            file_name = f"{html_dir}/{safe_name}_{random.randint(1000,9999)}.html"
+            with open(file_name, "w", encoding="utf-8") as f:
+                f.write(html_text)
+        
+        return {
+            **product,
+            "link": final_url,
+            "google_link": link,
+            "html_text": html_text
+        }
+        
+    except Exception as e:
+        print(f"Failed to fetch {link}: {e}")
+        return {**product, "html_text": ""}
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
+
+
+def scrape_google_products_streaming(
+    query: str,
+    max_products: int = 20,
+    on_product_ready=None
+) -> list[dict]:
+    """
+    Streaming version of scraper: calls on_product_ready(product) as soon as
+    each product's details are fetched, allowing parallel ranking.
+    
+    Args:
+        query: Search query
+        max_products: Max products to scrape
+        on_product_ready: Callback(product_dict) called immediately when each product is ready
+    
+    Returns:
+        List of all detailed products (for compatibility)
+    """
+    print(f"[Streaming] Starting scrape for: '{query}'")
+    
+    # 1. Get initial results
+    results = get_products(query)
+    products = results[:max_products]
+    
+    print(f"[Streaming] Found {len(products)} products. Starting parallel detail fetch...")
+    
+    if not products:
+        return []
+    
+    # Create HTML directory
+    safe_query = "".join([c if c.isalnum() else "_" for c in query])
+    html_dir = f"html_{safe_query}"
+    if not os.path.exists(html_dir):
+        os.makedirs(html_dir)
+    
+    detailed_products = []
+    local_driver_lock = threading.Lock()
+    
+    # Use ThreadPoolExecutor to fetch details in parallel
+    NUM_WORKERS = 6
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+        # Submit all products for detail fetching
+        future_to_product = {
+            executor.submit(fetch_single_product_details, p, html_dir, local_driver_lock): p
+            for p in products
+        }
+        
+        # As each completes, call the callback immediately
+        for future in concurrent.futures.as_completed(future_to_product):
+            try:
+                detailed_product = future.result()
+                detailed_products.append(detailed_product)
+                
+                # Stream to caller immediately!
+                if on_product_ready and detailed_product.get("html_text"):
+                    on_product_ready(detailed_product)
+                    
+                print(f"[Streaming] Product ready: {detailed_product.get('name', 'Unknown')[:40]}")
+                
+            except Exception as e:
+                print(f"[Streaming] Worker error: {e}")
+    
+    # Save results file
+    filename = f"products_{safe_query}.json"
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(detailed_products, f, indent=2, ensure_ascii=False)
+    
+    print(f"[Streaming] Complete. {len(detailed_products)} products saved to {filename}")
+    
+    return detailed_products
+
 
 if __name__ == "__main__":
     # Test the scraper

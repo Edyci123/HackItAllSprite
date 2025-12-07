@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+import concurrent.futures
+import threading
 
 from models import SearchRequest, TaskCreatedResponse, TaskStatusResponse, TaskStatus
 from tasks import task_manager
 from query_transformer import transform_user_query
-from scraper import scrape_google_products
-from ranker import rank_products
+from scraper import scrape_google_products_streaming
+from ranker import score_product
 
 tags_metadata = [
     {
@@ -28,7 +30,7 @@ This API allows you to search for products asynchronously.
 
 1. **Start a search** - Submit a search query and receive a task ID
 2. **Poll for results** - Use the task ID to check the status
-3. **Get results** - When completed, the response includes product URLs
+3. **Get results** - When completed, product URLs included
 
 ### Task Statuses:
 - `pending` - Task created, waiting to start
@@ -37,9 +39,18 @@ This API allows you to search for products asynchronously.
 - `failed` - Search failed, error message available
     """,
     version="1.0.0",
-    openapi_tags=tags_metadata,
     docs_url="/docs",
     redoc_url="/redoc",
+)
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -47,14 +58,19 @@ def run_search_task(task_id: str, query: str, country: str = "US"):
     """
     Background task that performs the actual product search pipeline.
     
-    Pipeline:
+    Pipeline (Streaming):
     1. Transform user query → Google search query + features
-    2. SERP scrape → Get URLs from Google
-    3. TODO: Filter/analyze results based on features
+    2. Scrape products and rank them IN PARALLEL as they arrive
     """
     try:
         # Update task status to running
         task_manager.update_task_status(task_id, TaskStatus.RUNNING)
+        task_manager.update_task_progress(
+            task_id,
+            current_step="transforming",
+            step_message="🔍 Analyzing your search query...",
+            progress_percent=5
+        )
 
         # Step 1: Transform user query into structured search data
         print(f"[Task {task_id}] Step 1: Transforming user query...")
@@ -62,32 +78,145 @@ def run_search_task(task_id: str, query: str, country: str = "US"):
         print(f"[Task {task_id}] ✓ Google Query: {search_data.google_search_query}")
         print(f"[Task {task_id}] ✓ Features: {search_data.product_features}")
         print(f"[Task {task_id}] ✓ Category: {search_data.product_category}")
+        
+        task_manager.update_task_progress(
+            task_id,
+            current_step="scraping",
+            step_message="🏪 Searching local businesses and online stores...",
+            progress_percent=10
+        )
 
-        # Step 2: Scrape Google Shopping
-        print(f"[Task {task_id}] Step 2: Scraping Google Shopping...")
-        raw_products = scrape_google_products(search_data.google_search_query)
-        print(f"[Task {task_id}] ✓ Found {len(raw_products)} raw products")
-
-        # Step 3: Rank Products
-        print(f"[Task {task_id}] Step 3: Ranking products...")
-        ranked_products = rank_products(raw_products, query)
-        print(f"[Task {task_id}] ✓ Ranking complete")
-
+        # Step 2 & 3: Stream scraping and ranking in parallel
+        print(f"[Task {task_id}] Step 2+3: Streaming scrape & rank...")
+        
+        # Shared state for tracking progress
+        scored_products = []
+        rank_futures = []
+        products_scraped = 0
+        products_scored = 0
+        total_products = 20  # Will be updated when we know actual count
+        lock = threading.Lock()
+        
+        # Create ranking executor that stays open during scraping
+        rank_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+        
+        # Queue for completed ranking futures - allows streaming during scraping
+        from queue import Queue
+        done_queue = Queue()
+        scraping_done = threading.Event()
+        
+        def on_product_scraped(product):
+            """Called immediately when a product is scraped - submits it for ranking."""
+            nonlocal products_scraped
+            with lock:
+                products_scraped += 1
+                current_scraped = products_scraped
+            
+            print(f"[Task {task_id}] Scraped {current_scraped}: {product.get('name', 'Unknown')[:40]}")
+            
+            # Update progress - scraping phase is 10-40%
+            progress = 10 + int((current_scraped / total_products) * 30)
+            task_manager.update_task_progress(
+                task_id,
+                current_step="scraping",
+                step_message=f"🔎 Found {current_scraped} products, analyzing...",
+                total_products=current_scraped,
+                progress_percent=progress
+            )
+            
+            # Submit to ranking immediately and add callback for when done
+            future = rank_executor.submit(score_product, product, query)
+            future.add_done_callback(lambda f: done_queue.put(f))
+            with lock:
+                rank_futures.append(future)
+        
+        def ranking_monitor():
+            """Monitor thread: streams ranked products to UI as they complete."""
+            nonlocal products_scored
+            while True:
+                try:
+                    # Wait for a completed future (with timeout to check if done)
+                    future = done_queue.get(timeout=0.5)
+                    try:
+                        scored_product = future.result()
+                        with lock:
+                            scored_products.append(scored_product)
+                            products_scored += 1
+                            current_scored = products_scored
+                            total_to_rank = len(rank_futures)
+                        
+                        # Update progress - ranking phase is 40-95%
+                        progress = 40 + int((current_scored / max(total_to_rank, 1)) * 55)
+                        task_manager.update_task_progress(
+                            task_id,
+                            current_step="ranking",
+                            step_message=f"✨ Analyzed {current_scored} of {total_to_rank} products",
+                            scored_product=scored_product,
+                            progress_percent=progress
+                        )
+                        print(f"[Task {task_id}] Scored {current_scored}: {scored_product.get('name', 'Unknown')[:30]}")
+                        
+                    except Exception as e:
+                        print(f"[Task {task_id}] Ranking error: {e}")
+                        
+                except:
+                    # Timeout - check if we're done
+                    with lock:
+                        all_done = scraping_done.is_set() and products_scored >= len(rank_futures)
+                    if all_done and done_queue.empty():
+                        break
+        
+        # Start ranking monitor thread
+        monitor_thread = threading.Thread(target=ranking_monitor, daemon=True)
+        monitor_thread.start()
+        
+        # Start streaming scrape - this will call on_product_scraped for each product
+        scrape_google_products_streaming(
+            search_data.google_search_query,
+            max_products=20,
+            on_product_ready=on_product_scraped
+        )
+        
+        # Signal that scraping is done
+        scraping_done.set()
+        print(f"[Task {task_id}] Scraping complete. Waiting for remaining rankings...")
+        
+        # Wait for monitor thread to finish processing all rankings
+        monitor_thread.join(timeout=120)  # 2 min max wait
+        
+        # Shutdown executor
+        rank_executor.shutdown(wait=False)
+        
+        # Sort by final score
+        scored_products.sort(key=lambda x: x.get("scores", {}).get("final_score", 0), reverse=True)
+        
         # Save ranked results to file
         safe_query = "".join([c if c.isalnum() else "_" for c in query])
         filename = f"ranked_{safe_query}.json"
         import json
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump([p for p in ranked_products], f, indent=2, ensure_ascii=False)
+            json.dump([p for p in scored_products], f, indent=2, ensure_ascii=False)
         print(f"[Task {task_id}] ✓ Ranked results saved to {filename}")
+
+        task_manager.update_task_progress(
+            task_id,
+            current_step="completed",
+            step_message="🎉 Search complete! Here are your results.",
+            progress_percent=100
+        )
 
        
         # Mark task as completed with results
-        task_manager.complete_task(task_id, ranked_products)
+        task_manager.complete_task(task_id, scored_products)
         print(f"[Task {task_id}] ✓ Task completed successfully!")
         
     except Exception as e:
         print(f"[Task {task_id}] ✗ Error: {str(e)}")
+        task_manager.update_task_progress(
+            task_id,
+            current_step="failed",
+            step_message=f"❌ An error occurred: {str(e)[:100]}"
+        )
         task_manager.fail_task(task_id, str(e))
 
 
@@ -149,12 +278,25 @@ async def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    # Sort partial results by score for display
+    partial_results = sorted(
+        task.scored_products,
+        key=lambda x: x.get("scores", {}).get("final_score", 0),
+        reverse=True
+    ) if task.scored_products else []
+
     return TaskStatusResponse(
         task_id=task.id,
         status=task.status,
         query=task.query,
         result=task.result,
         error=task.error,
+        current_step=task.current_step,
+        step_message=task.step_message,
+        total_products=task.total_products,
+        scored_count=len(task.scored_products),
+        progress_percent=task.progress_percent,
+        partial_results=partial_results,
     )
 
 
