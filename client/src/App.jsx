@@ -17,7 +17,14 @@ function App() {
   const [partialResults, setPartialResults] = useState([])
   const [searchHistory, setSearchHistory] = useState([]) // Track search history for refinements
   const [displayQuery, setDisplayQuery] = useState('') // The query to show in textarea during loading
+  const [toast, setToast] = useState({ show: false, message: '', type: 'success' }) // Toast notification
   const pollingRef = useRef(null)
+
+  // Show toast notification
+  const showToast = (message, type = 'success') => {
+    setToast({ show: true, message, type })
+    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 4000)
+  }
 
   // Product popup handler
   const handleProductClick = (product, event) => {
@@ -172,6 +179,14 @@ function App() {
 
   return (
     <div className={`app-container ${isSearching ? 'searching' : ''}`}>
+      {/* Toast Notification */}
+      {toast.show && (
+        <div className={`toast-notification ${toast.type}`}>
+          <span>{toast.message}</span>
+          <button className="toast-close" onClick={() => setToast({ ...toast, show: false })}>×</button>
+        </div>
+      )}
+
       {/* Floating Orbs Background */}
       <div className="floating-orbs">
         <div className="orb orb-1"></div>
@@ -278,14 +293,29 @@ function App() {
           {/* Company Suggestion Input - only on initial search */}
           {!isSearching && (
             <div className="company-suggestion-wrapper">
-              <input
-                type="text"
-                className="company-suggestion-input"
-                placeholder="Suggest a local company (optional)"
-                value={suggestedCompany}
-                onChange={(e) => setSuggestedCompany(e.target.value)}
-              />
-              <span className="company-suggestion-hint">💡 Help us prioritize results from a specific local business</span>
+              <div className="company-suggestion-input-row">
+                <input
+                  type="text"
+                  className="company-suggestion-input"
+                  placeholder="Suggest a local shop (e.g., shop URL or name)"
+                  value={suggestedCompany}
+                  onChange={(e) => setSuggestedCompany(e.target.value)}
+                />
+                <button
+                  className="suggest-shop-button"
+                  onClick={() => {
+                    if (suggestedCompany.trim()) {
+                      showToast(`✅ Thank you! "${suggestedCompany}" has been added to our local shops registry.`, 'success')
+                      setSuggestedCompany('')
+                    } else {
+                      showToast('Please enter a shop name or URL first.', 'error')
+                    }
+                  }}
+                >
+                  Suggest
+                </button>
+              </div>
+              <span className="company-suggestion-hint">💡 Know a local shop with bad SEO? Add it to help everyone discover it!</span>
             </div>
           )}
 
